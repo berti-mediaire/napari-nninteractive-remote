@@ -48,17 +48,19 @@ class nnInteractiveWidget(LayerControls):
         """
         super().on_init(*args, **kwargs)
 
-        if self.use_remote_inference:
-            self._send_image_to_server()
-            # We won't initialize the local session in this case
-        else:
-            self._initialize_local_session()
+
 
         _data = np.array(self._viewer.layers[self.session_cfg["name"]].data)
         _data = _data[np.newaxis, ...]
         if self.source_cfg["ndim"] == 2:
             _data = _data[np.newaxis, ...]
         self._current_image_data = _data  # Store for sending to server
+
+        if self.use_remote_inference:
+            self._send_image_to_server()
+            # We won't initialize the local session in this case
+        else:
+            self._initialize_local_session()
 
         self._data_result = np.zeros(self.session_cfg["shape"], dtype=np.uint8) # Initialize result buffer
         self._viewer.add_image(self._data_result, name=self.label_layer_name, visible=True)
@@ -128,29 +130,13 @@ class nnInteractiveWidget(LayerControls):
         """Sends the initial image data to the remote server."""
         if self._current_image_data is not None:
             try:
-                # Assuming _current_image_data is a NumPy array (C, Z, Y, X) or (C, Y, X)
-                # We need to handle different dimensions and potentially convert to a common format
-                img_tensor = torch.from_numpy(self._current_image_data).float()
-                if len(img_tensor.shape) == 4:
-                    # Take the first channel and a central slice (adjust as needed)
-                    img_slice = img_tensor[0, img_tensor.shape[1] // 2].numpy()
-                elif len(img_tensor.shape) == 3:
-                    img_slice = img_tensor[0].numpy()
-                else:
-                    show_warning("Image data has unexpected dimensions for remote transfer.")
-                    return
+                img_bytes = self._current_image_data.tobytes()
+                headers = {'Content-Type': 'application/octet-stream',
+                        'Image-Shape': str(self._current_image_data.shape),
+                        'Image-Dtype': str(self._current_image_data.dtype),
+                        'Spacing': str(self.session_cfg.get("spacing", None))} # Send spacing as header
 
-                # Normalize to 0-255 and convert to PIL Image
-                img_slice = (img_slice - img_slice.min()) / (img_slice.max() - img_slice.min()) * 255
-                img = Image.fromarray(img_slice.astype(np.uint8)).convert("RGB")
-
-                # Save to bytes buffer
-                img_buffer = io.BytesIO()
-                img.save(img_buffer, format="JPEG")
-                img_buffer.seek(0)
-
-                files = {'image': ('image.jpg', img_buffer, 'image/jpeg')}
-                response = requests.post(REMOTE_SERVER_URL, files=files)
+                response = requests.post(f"{REMOTE_SERVER_URL}/segment", data=img_bytes, headers=headers)
                 response.raise_for_status()
                 result_data = response.json()
                 print(f"Initial image sent. Server response: {result_data}")
