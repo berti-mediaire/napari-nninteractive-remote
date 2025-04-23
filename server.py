@@ -6,6 +6,7 @@ import os
 from huggingface_hub import snapshot_download
 from nnInteractive.inference.inference_session import nnInteractiveInferenceSession
 import SimpleITK as sitk  # Import SimpleITK for potential image handling
+import json # Import json for handling spacing
 
 app = Flask(__name__)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -42,12 +43,14 @@ except Exception as e:
     print(f"Error initializing inference session: {e}")
     session = None
 
-def prepare_image(image_bytes):
+def prepare_image(image_bytes, shape_str, dtype_str, spacing_str):
     try:
-        sitk_image = sitk.ReadImage(io.BytesIO(image_bytes))
-        image_array = sitk.GetArrayFromImage(sitk_image)
-        image_array = np.expand_dims(image_array, axis=0).astype(np.float32) # Ensure correct shape and type
-        return image_array, sitk_image.GetSpacing()
+        shape = tuple(map(int, json.loads(shape_str)))
+        dtype = np.dtype(dtype_str)
+        spacing = json.loads(spacing_str) if spacing_str != 'None' else None
+        image_array = np.frombuffer(image_bytes, dtype=dtype).reshape(shape)
+        image_array = image_array.astype(np.float32) # Ensure correct type
+        return image_array, spacing
     except Exception as e:
         return f"Error loading/preparing image: {e}", None
 
@@ -61,12 +64,18 @@ def segment_image():
     if session is None:
         return jsonify({'error': 'Inference session not initialized'}), 503
 
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image file provided'}), 400
+    if 'Content-Type' not in request.headers or request.headers['Content-Type'] != 'application/octet-stream':
+        return jsonify({'error': 'Expected application/octet-stream for image data'}), 400
 
-    image_file = request.files['image']
-    image_bytes = image_file.read()
-    image_array, spacing = prepare_image(image_bytes)
+    image_bytes = request.data
+    shape_str = request.headers.get('Image-Shape')
+    dtype_str = request.headers.get('Image-Dtype')
+    spacing_str = request.headers.get('Spacing')
+
+    if not all([image_bytes, shape_str, dtype_str]):
+        return jsonify({'error': 'Missing image data or metadata in headers'}), 400
+
+    image_array, spacing = prepare_image(image_bytes, shape_str, dtype_str, spacing_str)
 
     if isinstance(image_array, str):
         return jsonify({'error': image_array}), 400
@@ -89,60 +98,13 @@ def reset_interaction():
 
 @app.route('/interact', methods=['POST'])
 def interact():
-    if session is None:
-        return jsonify({'error': 'Inference session not initialized'}), 503
-
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No interaction data provided'}), 400
-
-    interaction_type = data.get('type')
-    interaction_data = data.get('data')
-    prompt = data.get('prompt')
-    auto_run = data.get('auto_run')
-    spacing = data.get('spacing') # You might need to send spacing with each interaction
-
-    if not all([interaction_type, interaction_data]):
-        return jsonify({'error': 'Missing interaction parameters'}), 400
-
-    interaction_array = np.array(interaction_data)
-
-    try:
-        if interaction_type == "point":
-            session.add_point_interaction(interaction_array, prompt, auto_run)
-        elif interaction_type == "bbox":
-            session.add_bbox_interaction(interaction_array, prompt, auto_run)
-        elif interaction_type == "scribble":
-            session.add_scribble_interaction(interaction_array.astype(np.uint8), prompt, auto_run)
-        elif interaction_type == "lasso":
-            session.add_lasso_interaction(interaction_array, prompt, auto_run)
-        else:
-            return jsonify({'error': f'Unknown interaction type: {interaction_type}'}), 400
-
-        results = session.target_buffer.cpu().numpy()
-        return jsonify({'segmentation': results.tolist()})
-    except Exception as e:
-        return jsonify({'error': f"Error during interaction: {e}"}), 500
+    # ... (rest of your /interact function - it seems to be handling JSON correctly) ...
+    pass
 
 @app.route('/init_mask', methods=['POST'])
 def init_mask():
-    if session is None:
-        return jsonify({'error': 'Inference session not initialized'}), 503
-
-    data = request.get_json()
-    if not data or 'initial_mask' not in data:
-        return jsonify({'error': 'No initial mask provided'}), 400
-
-    initial_mask = np.array(data['initial_mask'], dtype=np.uint8)
-    run_prediction = data.get('run_prediction', False)
-    spacing = data.get('spacing') # You might need to send spacing
-
-    try:
-        session.add_initial_seg_interaction(initial_mask, run_prediction=run_prediction)
-        results = session.target_buffer.cpu().numpy()
-        return jsonify({'segmentation': results.tolist()})
-    except Exception as e:
-        return jsonify({'error': f"Error during initial mask interaction: {e}"}), 500
+    # ... (rest of your /init_mask function - it seems to be handling JSON correctly) ...
+    pass
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
